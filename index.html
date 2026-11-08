@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCharities Proof App (Mockup v1)</title>
+<!--
+  OpenCharities Proof App, mockup for prototype v1
+  -------------------------------------------------
+  What this page does (decisions from the meeting on 6 Nov 2026):
+  1. Simple login (no real check, the login is not the focus of the thesis).
+  2. Home screen with "Proof", "Verify proofs" and "Overview".
+  3. Proof: choose a project first, then the webcam opens.
+  4. On capture: photo + project + GPS + timestamp are saved immediately (no preview).
+     If there is no GPS position, the proof is blocked (team decision).
+  5. The data package is hashed with SHA-256. Everything is stored only locally
+     in this browser (localStorage). No blockchain, no server.
+  6. Verify: hash the stored data again and compare with the stored hash.
+     Same hash = unchanged (check mark), different hash = changed (cross).
+  7. Deleting is allowed but logged: the entry stays visible as "deleted",
+     the photo is removed, the original hash is kept as a trace.
+
+  This is NOT a zero-knowledge proof yet. Whoever verifies needs the original data.
+
+  How to run: save this file, open it in Chrome or Edge, allow camera and location.
+-->
+<style>
+  :root{
+    --bg:#eef1f5; --phone:#ffffff; --fg:#1d1d1f; --muted:#6e6e73; --line:#e3e5ea;
+    --accent:#0b4f8a; --accent-soft:#e6eef7;
+    --ok:#1f8a3b; --ok-soft:#e5f4ea; --bad:#c62828; --bad-soft:#fbe9e9; --grey:#8e8e93;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);
+       font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--fg)}
+  /* The phone frame, so the laptop mockup looks like the later app */
+  .phone{width:390px;max-width:100vw;height:800px;max-height:100vh;background:var(--phone);
+         border-radius:36px;box-shadow:0 20px 60px rgba(0,0,0,.18);overflow:hidden;display:flex;flex-direction:column}
+  @media (max-width:420px){.phone{border-radius:0;height:100vh}}
+  header{padding:18px 20px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  header h1{font-size:17px;margin:0;flex:1}
+  .back{border:0;background:none;color:var(--accent);font-size:15px;cursor:pointer;padding:0}
+  .screen{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px}
+  .hidden{display:none!important}
+  .btn{border:0;border-radius:14px;padding:14px 16px;font-size:16px;font-weight:600;cursor:pointer;
+       background:var(--accent);color:#fff;width:100%}
+  .btn.secondary{background:var(--accent-soft);color:var(--accent)}
+  .btn.small{width:auto;padding:8px 12px;font-size:14px;border-radius:10px}
+  .btn.danger{background:var(--bad-soft);color:var(--bad)}
+  .btn:disabled{opacity:.45;cursor:default}
+  input,select{font:inherit;padding:12px;border:1px solid var(--line);border-radius:12px;width:100%}
+  .muted{color:var(--muted);font-size:13px}
+  .big-tile{border:0;border-radius:18px;padding:22px;text-align:left;cursor:pointer;background:var(--accent-soft);color:var(--fg)}
+  .big-tile strong{display:block;font-size:19px;color:var(--accent);margin-bottom:4px}
+  video,.photo{width:100%;border-radius:16px;background:#000;display:block}
+  .shutter{width:72px;height:72px;border-radius:50%;border:5px solid var(--accent);background:#fff;
+           margin:6px auto 0;cursor:pointer;display:block}
+  .shutter:disabled{opacity:.4;cursor:default}
+  .msg{border-radius:12px;padding:12px;font-size:14px}
+  .msg.ok{background:var(--ok-soft);color:var(--ok)}
+  .msg.bad{background:var(--bad-soft);color:var(--bad)}
+  .msg.info{background:var(--accent-soft);color:var(--accent)}
+  .list{display:flex;flex-direction:column}
+  .row{display:flex;align-items:center;gap:12px;padding:12px 4px;border-top:1px solid var(--line);cursor:pointer}
+  .row:first-child{border-top:0}
+  .row img{width:48px;height:48px;object-fit:cover;border-radius:10px;background:var(--line)}
+  .row .t{flex:1;min-width:0}
+  .row .t b{display:block;font-weight:600}
+  .badge{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-weight:700;flex:none}
+  .badge.ok{background:var(--ok-soft);color:var(--ok)}
+  .badge.bad{background:var(--bad-soft);color:var(--bad)}
+  .badge.none{background:var(--line);color:var(--grey)}
+  .row.deleted .t b{text-decoration:line-through;color:var(--grey)}
+  dl{margin:0;display:grid;grid-template-columns:110px 1fr;gap:8px 10px;font-size:14px}
+  dt{color:var(--muted)}
+  dd{margin:0;overflow-wrap:anywhere}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+</style>
+</head>
+<body>
+<div class="phone">
+  <header>
+    <button class="back hidden" id="backBtn" onclick="goBack()">&lsaquo; Back</button>
+    <h1 id="title">OpenCharities Proof</h1>
+    <span class="muted" id="who"></span>
+  </header>
+
+  <!-- 1. Login -->
+  <section class="screen" id="s-login">
+    <p>Sign in as NGO staff member.</p>
+    <input id="loginName" placeholder="Your name" autocomplete="off">
+    <input type="password" placeholder="Password (not checked in this mockup)">
+    <button class="btn" onclick="login()">Sign in</button>
+    <p class="muted">Mockup: any name works. Data stays in this browser only.</p>
+  </section>
+
+  <!-- 2. Home -->
+  <section class="screen hidden" id="s-home">
+    <button class="big-tile" onclick="startProof()"><strong>Proof</strong>Take a photo as proof for a project.</button>
+    <button class="big-tile" onclick="verifyAll()"><strong>Verify proofs</strong>Check that no stored proof was changed.</button>
+    <button class="big-tile" onclick="openOverview()"><strong>Overview</strong>All proofs with their status.</button>
+    <button class="btn secondary" onclick="logout()">Sign out</button>
+  </section>
+
+  <!-- 3a. Choose project -->
+  <section class="screen hidden" id="s-project">
+    <p>Which project is this proof for?</p>
+    <select id="projectSelect"></select>
+    <button class="btn" onclick="openCamera()">Open camera</button>
+  </section>
+
+  <!-- 3b. Camera -->
+  <section class="screen hidden" id="s-camera">
+    <div class="msg info" id="camProject"></div>
+    <video id="video" autoplay playsinline muted></video>
+    <button class="shutter" id="shutter" onclick="capture()" aria-label="Take photo" disabled></button>
+    <div id="camMsg" class="muted" style="text-align:center">Starting camera and location...</div>
+  </section>
+
+  <!-- 3c. Saved -->
+  <section class="screen hidden" id="s-saved">
+    <div class="msg ok"><b>Proof saved.</b> The data package was hashed and stored.</div>
+    <dl id="savedInfo"></dl>
+    <button class="btn" onclick="openCamera()">Take another proof</button>
+    <button class="btn secondary" onclick="openOverview()">Go to overview</button>
+  </section>
+
+  <!-- 4. Overview -->
+  <section class="screen hidden" id="s-overview">
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="muted" id="ovCount" style="flex:1"></span>
+      <button class="btn small" onclick="verifyAll()">Verify all</button>
+    </div>
+    <div id="ovMsg"></div>
+    <div class="list" id="ovList"></div>
+  </section>
+
+  <!-- 5. Detail -->
+  <section class="screen hidden" id="s-detail"></section>
+</div>
+
+<canvas id="canvas" class="hidden"></canvas>
+
+<script>
+/* ---------- 1. Settings and stored data ---------- */
+
+// Projects are fixed in v1 (team decision): no screen to create them.
+const PROJECTS = ['Laptops Nepal', 'School books Kenya', 'Water filters Nigeria'];
+
+const STORAGE_KEY = 'oc-proofs-v1';   // name under which proofs are stored in the browser
+let currentUser = localStorage.getItem('oc-user') || null;
+let currentProject = PROJECTS[0];
+let stream = null;                   // the running webcam
+let navStack = [];                    // which screens we came from, for the Back button
+
+// Read all proofs from the browser storage (or an empty list).
+function loadProofs() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+  catch (e) { return []; }
+}
+// Write all proofs back to the browser storage.
+function saveProofs(list) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+}
+
+/* ---------- 2. Hashing ---------- */
+
+// Builds the exact text that gets hashed. The order is fixed (an array),
+// so the same data always gives the same text and therefore the same hash.
+function hashInput(p) {
+  return JSON.stringify([p.project, p.capturedAt, p.latitude, p.longitude, p.capturedBy, p.photo]);
+}
+
+// SHA-256 with the browser's built-in crypto. Returns the hash as hex text.
+async function sha256(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* ---------- 3. Screens and navigation ---------- */
+
+const TITLES = { login:'OpenCharities Proof', home:'Home', project:'New proof', camera:'Camera',
+                 saved:'Saved', overview:'Overview of proofs', detail:'Proof details' };
+
+function show(name, remember = true) {
+  const current = document.querySelector('.screen:not(.hidden)');
+  if (remember && current && current.id !== 's-' + name) navStack.push(current.id.slice(2));
+  if (name !== 'camera') stopCamera();
+  document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+  document.getElementById('s-' + name).classList.remove('hidden');
+  document.getElementById('title').textContent = TITLES[name];
+  document.getElementById('backBtn').classList.toggle('hidden', name === 'login' || name === 'home');
+  document.getElementById('who').textContent = currentUser || '';
+}
+function goBack() {
+  let prev = navStack.pop() || 'home';
+  if (prev === 'saved' || prev === 'camera') prev = 'home';
+  show(prev, false);
+  if (prev === 'overview') renderOverview();
+}
+
+/* ---------- 4. Login ---------- */
+
+function login() {
+  const name = document.getElementById('loginName').value.trim();
+  if (!name) { alertBox('Please enter a name.'); return; }
+  currentUser = name;
+  localStorage.setItem('oc-user', name);
+  navStack = [];
+  show('home', false);
+}
+function logout() {
+  currentUser = null;
+  localStorage.removeItem('oc-user');
+  navStack = [];
+  show('login', false);
+}
+
+/* ---------- 5. Taking a proof ---------- */
+
+function startProof() {
+  const sel = document.getElementById('projectSelect');
+  sel.innerHTML = PROJECTS.map(p => `<option${p === currentProject ? ' selected' : ''}>${p}</option>`).join('');
+  show('project');
+}
+
+async function openCamera() {
+  currentProject = document.getElementById('projectSelect').value || currentProject;
+  show('camera');
+  document.getElementById('camProject').textContent = 'Project: ' + currentProject;
+  const shutter = document.getElementById('shutter');
+  const msg = document.getElementById('camMsg');
+  shutter.disabled = true;
+  msg.textContent = 'Starting camera...';
+  try {
+    // Ask the browser for the webcam. The browser shows a permission prompt.
+    // On a phone, "environment" means the back camera; a laptop just uses its webcam.
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    document.getElementById('video').srcObject = stream;
+    shutter.disabled = false;
+    msg.textContent = 'Location is read when you take the photo.';
+  } catch (e) {
+    msg.innerHTML = '<span style="color:var(--bad)">No camera access. Allow the camera in the browser and try again.</span>';
+  }
+}
+
+function stopCamera() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+}
+
+// Ask the browser for the current position. Resolves with the position or rejects.
+function getPosition() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(new Error('no geolocation')); return; }
+    navigator.geolocation.getCurrentPosition(resolve, reject,
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+  });
+}
+
+async function capture() {
+  const shutter = document.getElementById('shutter');
+  const msg = document.getElementById('camMsg');
+  shutter.disabled = true;
+
+  // Step 1: freeze the moment. Timestamp and photo are taken at the click.
+  const capturedAt = new Date().toISOString();
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const scale = Math.min(1, 640 / video.videoWidth);          // shrink to max 640 px wide
+  canvas.width = Math.round(video.videoWidth * scale);
+  canvas.height = Math.round(video.videoHeight * scale);
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  const photo = canvas.toDataURL('image/jpeg', 0.7);           // the photo as text
+
+  // Step 2: read the location. Without location there is no proof (team decision).
+  msg.textContent = 'Reading location...';
+  let pos;
+  try {
+    pos = await getPosition();
+  } catch (e) {
+    msg.innerHTML = '<span style="color:var(--bad)"><b>Proof blocked:</b> no location available. Turn on location access and try again. Nothing was saved.</span>';
+    shutter.disabled = false;
+    return;
+  }
+
+  // Step 3: build the data package.
+  const proof = {
+    id: 'p' + Date.now(),
+    project: currentProject,
+    capturedAt,
+    latitude: Number(pos.coords.latitude.toFixed(6)),
+    longitude: Number(pos.coords.longitude.toFixed(6)),
+    accuracy: Math.round(pos.coords.accuracy),               // shown, but not part of the hash
+    capturedBy: currentUser,
+    photo,
+    deleted: null,
+    lastCheck: null
+  };
+
+  // Step 4: hash the package immediately and store everything (no preview).
+  proof.hash = await sha256(hashInput(proof));
+  const list = loadProofs();
+  list.unshift(proof);
+  try { saveProofs(list); }
+  catch (e) {
+    msg.innerHTML = '<span style="color:var(--bad)">Browser storage is full. Delete old proofs or reset the demo.</span>';
+    shutter.disabled = false;
+    return;
+  }
+
+  document.getElementById('savedInfo').innerHTML = infoRows(proof);
+  show('saved');
+}
+
+/* ---------- 6. Verify ---------- */
+
+// Hash the stored data again and compare with the stored hash.
+async function checkProof(p) {
+  if (p.deleted) return null;                                 // deleted proofs cannot be checked
+  const again = await sha256(hashInput(p));
+  return { ok: again === p.hash, recomputed: again, at: new Date().toISOString() };
+}
+
+async function verifyAll() {
+  const list = loadProofs();
+  let ok = 0, bad = 0;
+  for (const p of list) {
+    const r = await checkProof(p);
+    if (!r) continue;
+    p.lastCheck = r;
+    r.ok ? ok++ : bad++;
+  }
+  saveProofs(list);
+  openOverview();
+  const box = document.getElementById('ovMsg');
+  if (!ok && !bad) box.innerHTML = '<div class="msg info">No proofs to verify yet.</div>';
+  else if (bad) box.innerHTML = `<div class="msg bad"><b>${bad} proof${bad > 1 ? 's were' : ' was'} changed</b> after saving. ${ok} unchanged.</div>`;
+  else box.innerHTML = `<div class="msg ok"><b>All ${ok} proofs unchanged.</b></div>`;
+}
+
+/* ---------- 7. Overview and details ---------- */
+
+function openOverview() {
+  show('overview');
+  document.getElementById('ovMsg').innerHTML = '';
+  renderOverview();
+}
+
+function badge(p) {
+  if (p.deleted) return '<span class="badge none" title="Deleted">&minus;</span>';
+  if (!p.lastCheck) return '<span class="badge none" title="Not verified yet">?</span>';
+  return p.lastCheck.ok ? '<span class="badge ok" title="Unchanged">&#10003;</span>'
+                        : '<span class="badge bad" title="Changed">&#10007;</span>';
+}
+
+function fmt(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-GB') + ', ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function renderOverview() {
+  const list = loadProofs();
+  document.getElementById('ovCount').textContent = list.length + ' proof' + (list.length === 1 ? '' : 's');
+  document.getElementById('ovList').innerHTML = list.length ? list.map(p => `
+    <div class="row${p.deleted ? ' deleted' : ''}" onclick="openDetail('${p.id}')">
+      ${p.photo ? `<img src="${p.photo}" alt="">` : '<img alt="">'}
+      <div class="t"><b>${p.project}</b><span class="muted">${fmt(p.capturedAt)}${p.deleted ? ', deleted' : ''}</span></div>
+      ${badge(p)}
+    </div>`).join('') : '<p class="muted">No proofs yet. Go back and take the first one.</p>';
+}
+
+function infoRows(p) {
+  const map = `https://www.openstreetmap.org/?mlat=${p.latitude}&mlon=${p.longitude}#map=16/${p.latitude}/${p.longitude}`;
+  return `
+    <dt>Project</dt><dd>${p.project}</dd>
+    <dt>Time</dt><dd>${fmt(p.capturedAt)}</dd>
+    <dt>Location</dt><dd>${p.latitude}, ${p.longitude} (about ${p.accuracy} m) <a href="${map}" target="_blank" rel="noopener">map</a></dd>
+    <dt>Taken by</dt><dd>${p.capturedBy}</dd>
+    <dt>Stored hash</dt><dd><code>${p.hash}</code></dd>`;
+}
+
+function openDetail(id) {
+  const p = loadProofs().find(x => x.id === id);
+  if (!p) return;
+  let status;
+  if (p.deleted) status = `<div class="msg info"><b>Deleted</b> on ${fmt(p.deleted.at)} by ${p.deleted.by}. Reason: ${p.deleted.reason || 'none given'}. The photo was removed, the original hash is kept.</div>`;
+  else if (!p.lastCheck) status = '<div class="msg info">Not verified yet.</div>';
+  else if (p.lastCheck.ok) status = `<div class="msg ok"><b>Unchanged.</b> Hash matches (checked ${fmt(p.lastCheck.at)}).</div>`;
+  else status = `<div class="msg bad"><b>Changed!</b> The data no longer gives the stored hash.<br><code>now: ${p.lastCheck.recomputed}</code></div>`;
+
+  document.getElementById('s-detail').innerHTML = `
+    ${status}
+    ${p.photo ? `<img class="photo" src="${p.photo}" alt="Proof photo">` : ''}
+    <dl>${infoRows(p)}</dl>
+    ${p.deleted ? '' : `
+      <button class="btn" onclick="verifyOne('${p.id}')">Verify this proof</button>
+      <button class="btn danger" onclick="deleteProof('${p.id}')">Delete proof (logged)</button>
+      <p class="muted">Demo for the presentation: change the stored time by one minute without a new hash, then verify.</p>
+      <button class="btn secondary small" onclick="tamper('${p.id}')">Demo: change time by 1 minute</button>`}`;
+  show('detail');
+}
+
+async function verifyOne(id) {
+  const list = loadProofs();
+  const p = list.find(x => x.id === id);
+  p.lastCheck = await checkProof(p);
+  saveProofs(list);
+  openDetail(id);
+}
+
+// Deleting is logged: keep the entry, remove the photo, keep the original hash.
+function deleteProof(id) {
+  const reason = prompt('Why is this proof deleted? (e.g. blurry photo)');
+  if (reason === null) return;                                // cancelled
+  const list = loadProofs();
+  const p = list.find(x => x.id === id);
+  p.deleted = { at: new Date().toISOString(), by: currentUser, reason: reason.trim() };
+  p.photo = null;
+  p.lastCheck = null;
+  saveProofs(list);
+  openDetail(id);
+}
+
+// Demo only: change the data afterwards WITHOUT making a new hash.
+function tamper(id) {
+  const list = loadProofs();
+  const p = list.find(x => x.id === id);
+  p.capturedAt = new Date(new Date(p.capturedAt).getTime() + 60000).toISOString();
+  p.lastCheck = null;
+  saveProofs(list);
+  openDetail(id);
+}
+
+function alertBox(text) { alert(text); }
+
+/* ---------- 8. Start ---------- */
+show(currentUser ? 'home' : 'login', false);
+
+// Camera, location and SHA-256 only work on a secure page (https:// or a local file on a laptop).
+if (!window.isSecureContext) {
+  alert('This page is not opened via https://. Camera, location and hashing will not work. Open the https link instead.');
+}
+</script>
+</body>
+</html>
