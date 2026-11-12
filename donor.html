@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proof Check for Donors</title>
+<!--
+  Donor page of the OpenCharities proof prototype.
+  It reads a published location proof from the Ethereum Sepolia testnet and checks it:
+  1. the proof transaction and the original photo transaction come from the NGO wallet,
+  2. the proof refers to the location commitment that was stored when the photo was taken,
+  3. the proof uses the publicly announced claim of the project (site and radius),
+  4. the zero-knowledge proof itself is mathematically valid.
+  The donor never sees the exact location, the photo or the person who took it.
+-->
+<style>
+  :root{--bg:#fff;--card:#f4f4f6;--fg:#1d1d1f;--fg2:#6e6e73;--sep:#e3e3e8;--accent:#007aff;--ok:#34c759;--ok-soft:#e6f8eb;--bad:#ff3b30;--bad-soft:#fdecec;
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 var(--font);-webkit-font-smoothing:antialiased}
+  main{max-width:640px;margin:0 auto;padding:28px 20px 60px}
+  .logo{width:46px;height:46px;border-radius:13px;display:grid;place-items:center;color:#fff;background:linear-gradient(140deg,#5ac8fa,#007aff 55%,#5856d6)}
+  .logo svg{width:26px;height:26px}
+  h1{font:800 34px/1.1 var(--display);letter-spacing:-.02em;margin:18px 0 6px}
+  .lead{color:var(--fg2);margin:0 0 26px;font-size:17px}
+  h2{font:700 21px var(--display);margin:30px 0 12px}
+  .card{background:var(--card);border-radius:24px;padding:20px 22px;margin-bottom:14px}
+  .row{display:flex;gap:12px;padding:10px 0;border-top:1px solid var(--sep);font-size:15px}
+  .row:first-of-type{border-top:0}
+  .row span:first-child{color:var(--fg2);width:120px;flex:none}
+  .row span:last-child{flex:1;min-width:0;overflow-wrap:anywhere}
+  a{color:var(--accent);text-decoration:none;font-weight:500}
+  input{width:100%;font:15px ui-monospace,Menlo,monospace;padding:14px;border:1px solid var(--sep);border-radius:14px;background:#fff}
+  button{font:inherit;border:0;cursor:pointer}
+  .btn{display:block;width:100%;margin-top:12px;padding:15px;border-radius:16px;background:var(--accent);color:#fff;font-weight:600;font-size:17px}
+  .steps{list-style:none;padding:0;margin:0}
+  .steps li{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--sep)}
+  .steps li:first-child{border-top:0}
+  .dot{width:24px;height:24px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-size:14px;font-weight:700;background:#c7c7cc}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
+  .result{border-radius:24px;padding:22px;margin-bottom:14px;display:flex;gap:16px;align-items:center}
+  .result.ok{background:var(--ok-soft)} .result.bad{background:var(--bad-soft)}
+  .result .big{width:54px;height:54px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-size:28px;font-weight:800}
+  .result.ok .big{background:var(--ok)} .result.bad .big{background:var(--bad)}
+  .result b{display:block;font:700 19px/1.25 var(--display)}
+  .muted{color:var(--fg2);font-size:14px}
+  .tag{display:inline-block;font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;background:#fff;border-radius:8px;padding:3px 8px;margin-bottom:6px}
+  .hidden-list{margin:6px 0 0;padding-left:20px;color:var(--fg2);font-size:15px}
+</style>
+</head>
+<body>
+<main>
+  <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></div>
+  <h1>Check a donation proof</h1>
+  <p class="lead">See that a photo proof meets the project's claim, without seeing the exact location, the photo or the people in it. Prototype on the Ethereum Sepolia testnet.</p>
+
+  <div id="result"></div>
+
+  <h2>Check a proof</h2>
+  <div class="card">
+    <input id="txIn" placeholder="Proof link or transaction ID (0x...)" autocomplete="off">
+    <button class="btn" onclick="checkFromInput()">Check Proof</button>
+    <div id="stepsBox" style="margin-top:16px"></div>
+  </div>
+
+  <h2>Projects and their claims</h2>
+  <p class="muted" style="margin-top:-4px">These claims are public before anyone donates. Every published proof is checked against them.</p>
+  <div id="projects"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6/dist/ethers.umd.min.js"></script>
+<script src="zk/snarkjs.min.js"></script>
+<script>
+/* ---------- Settings (must match the NGO app) ---------- */
+const CHAIN = { id: 11155111, rpc: 'https://ethereum-sepolia-rpc.publicnode.com', explorer: 'https://sepolia.etherscan.io' };
+const NGO_WALLET = '0x7e19875177eB80a0Ff4d35dFd34F5925E1C9a625';   // public address of the NGO wallet
+const CLAIM_RADIUS_M = 1000;
+const PROJECTS = [
+  { name: 'Digital Classroom Pokhara', desc: 'Laptops for a primary school', country: 'Nepal', site: { lat: 28.2096, lon: 83.9856 } },
+  { name: 'Books for Kibera', desc: 'School books for a learning centre', country: 'Kenya', site: { lat: -1.3133, lon: 36.7876 } },
+  { name: 'Clean Water Kano', desc: 'Water filters for rural families', country: 'Nigeria', site: { lat: 12.0022, lon: 8.5920 } },
+  { name: 'Test Site SOWI Innsbruck', desc: 'Test project for the location proof', country: 'Austria', site: { lat: 47.2650, lon: 11.3995 } }
+];
+// Verification key of the location circuit (public, created in the setup of zk/location.circom).
+const VKEY = {"protocol": "groth16", "curve": "bn128", "nPublic": 5, "vk_alpha_1": ["16931575818636720113519593810861143432307962493335028899688621729037099176342", "172755670773180092948594943243406062849204072535825439429890176777382852376", "1"], "vk_beta_2": [["4591426102438394347691202788681653819500492273293927793870278747714623922566", "6855538676469597500517534467222823110100058540236604244674992858740614976482"], ["15259263206711553942507866415803536048977681766777930095371706107988853637781", "2420731686362255864605996669689383236603918513857604924711831014027217412048"], ["1", "0"]], "vk_gamma_2": [["10857046999023057135944570762232829481370756359578518086990519993285655852781", "11559732032986387107991004021392285783925812861821192530917403151452391805634"], ["8495653923123431417604973247489272438418190587263600148770280649306958101930", "4082367875863433681332203403145435568316851327593401208105741076214120093531"], ["1", "0"]], "vk_delta_2": [["18920596986589411570135126569319311340058682954334939601774689200586744268381", "14100898550878828762690359256051999195698424566448569321563895192877929923482"], ["5353727005673266290740473298426986490865193072870492767616804582480145689738", "15009752436110882037773658100806870186519640437505152723130760894578562506925"], ["1", "0"]], "vk_alphabeta_12": [[["13147238409596642963196808797809340407173050570751308698256085026691007380067", "14399962568637008748143457251263270466578088302568150056784595252574322114971"], ["21716180681764338359257726582196768795176098694062141836804149385216508966578", "14575041255995573385872195874019564547513513742682016784377631183741896836702"], ["19342847267359140825497283675672665406522651707676863422009749993073521774663", "9987214743506245680417662129599615010845636240162633106848246941426616595961"]], [["1757107739886190517097118604287346529771311989515453159002656467438815341409", "12115155708432330234820752046576851548954879849144021462041561073728325974723"], ["11172256714817745320478404467443478434712903065060200510932968739661311846178", "18671411229216228644934686916371940220683777876681848103051313366507764974725"], ["15720120803119356165587404800556055471470084121292390967294756523338441457464", "1113712849434384090434219083053205252713311320779908519719118684438840075386"]]], "IC": [["1689868739629869187351134670233102050387419058883940680300721881787416653978", "9918803860448436642930897804539171927828308246553369810694145904260528532731", "1"], ["10439479948310128344576249180788914438436877792133469817082840166595982013125", "4831231120716548160492339613589754961488003517092699581879355001588207789823", "1"], ["16036823930211905094742515684616187523650654477950681320842773843920191591440", "21217973006899453337058067285247528330803329745587699202558876183862343796853", "1"], ["14707873394601787764822085781348569874759158251765252454536612208189141163856", "6686629878396483055572444713542163309428843429979642831270530617786605421151", "1"], ["18027313126712919129100355860671181505362002027972359270206215633878866107884", "5173757027116399516102561354800545225635683321828319749278995790696040411762", "1"], ["9543677675249606138460349485469149324726672139671527517693590328584576711898", "7549419605739176903725204015477538739308943381891148347083136070209315142352", "1"]]};
+
+/* ---------- Same claim numbers as in the app ---------- */
+function coordInts(lat, lon) { return [BigInt(Math.round(lat * 1e6) + 90e6), BigInt(Math.round(lon * 1e6) + 180e6)]; }
+function claimParams(project) {
+  const [cLat, cLon] = coordInts(project.site.lat, project.site.lon);
+  return { centerLat: cLat, centerLon: cLon,
+           cosK: BigInt(Math.round(Math.cos(project.site.lat * Math.PI / 180) * 1000)),
+           radius: BigInt(Math.round(CLAIM_RADIUS_M / 0.11132)) };
+}
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* ---------- Project list ---------- */
+document.getElementById('projects').innerHTML = PROJECTS.map(p => `
+  <div class="card"><span class="tag">${p.country}</span>
+    <div style="font:700 20px var(--display)">${p.name}</div>
+    <div class="muted">${p.desc}</div>
+    <div class="row" style="margin-top:10px"><span>Claim</span><span>Every photo proof is taken within ${CLAIM_RADIUS_M / 1000} km of the project site</span></div>
+    <div class="row"><span>Project site</span><span><a href="https://www.openstreetmap.org/?mlat=${p.site.lat}&mlon=${p.site.lon}#map=15/${p.site.lat}/${p.site.lon}" target="_blank" rel="noopener">Show on map</a></span></div>
+  </div>`).join('');
+
+/* ---------- Checking ---------- */
+const STEP_NAMES = [
+  'Read the proof from the blockchain',
+  'Proof was published by the NGO wallet',
+  'Proof refers to the data stored when the photo was taken',
+  'Proof uses the public claim of the project',
+  'Zero-knowledge proof is mathematically valid'
+];
+function renderSteps(states, notes) {
+  document.getElementById('stepsBox').innerHTML = '<ul class="steps">' + STEP_NAMES.map((n, i) => {
+    const st = states[i];
+    const d = st === true ? '<span class="dot ok">&#10003;</span>' : st === false ? '<span class="dot bad">&#10007;</span>' : '<span class="dot">' + (i + 1) + '</span>';
+    return `<li>${d}<div>${n}${notes[i] ? '<div class="muted">' + notes[i] + '</div>' : ''}</div></li>`;
+  }).join('') + '</ul>';
+}
+function fail(states, notes, i, why) {
+  states[i] = false; notes[i] = why; renderSteps(states, notes);
+  document.getElementById('result').innerHTML = `<div class="result bad"><span class="big">&#10007;</span><div><b>Proof not confirmed</b><span class="muted">${why}</span></div></div>`;
+}
+function fmt(ts) { return new Date(ts * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+
+async function checkProof(txId) {
+  const states = [null, null, null, null, null], notes = [];
+  document.getElementById('result').innerHTML = '';
+  renderSteps(states, notes);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txId)) return fail(states, notes, 0, 'This is not a valid transaction ID.');
+  const provider = new ethers.JsonRpcProvider(CHAIN.rpc, CHAIN.id, { staticNetwork: true });
+
+  // 1. Proof transaction
+  let tx, data;
+  try {
+    tx = await provider.getTransaction(txId);
+    if (!tx) return fail(states, notes, 0, 'Transaction not found on Sepolia.');
+    data = JSON.parse(ethers.toUtf8String(tx.data));
+    if (data.t !== 'oc-location-proof-v1') throw new Error('type');
+  } catch (e) { return fail(states, notes, 0, 'This transaction does not contain a location proof.'); }
+  states[0] = true; renderSteps(states, notes);
+
+  // 2. Sender is the NGO wallet, also for the original photo transaction
+  let ref, refBlock;
+  try { ref = await provider.getTransaction(data.ref); } catch (e) {}
+  if (!ref) return fail(states, notes, 1, 'The original photo transaction was not found.');
+  if (tx.from.toLowerCase() !== NGO_WALLET.toLowerCase() || ref.from.toLowerCase() !== NGO_WALLET.toLowerCase())
+    return fail(states, notes, 1, 'The proof was not published by the NGO wallet.');
+  try { refBlock = await provider.getBlock(ref.blockNumber); } catch (e) {}
+  states[1] = true; renderSteps(states, notes);
+
+  // 3. Commitment stored at capture time = commitment used in the proof
+  const refData = ref.data.replace(/^0x/, '');
+  if (refData.length < 128) return fail(states, notes, 2, 'The photo transaction has no location commitment.');
+  const stored = BigInt('0x' + refData.slice(64, 128));
+  if (stored !== BigInt(data.pub[0])) return fail(states, notes, 2, 'The proof does not match the data stored when the photo was taken.');
+  states[2] = true;
+  notes[2] = refBlock ? 'Photo data stored on ' + fmt(refBlock.timestamp) + ', block ' + ref.blockNumber : '';
+  renderSteps(states, notes);
+
+  // 4. Public claim numbers match the project's announced claim
+  const project = PROJECTS.find(p => p.name === data.project);
+  if (!project) return fail(states, notes, 3, 'Unknown project.');
+  const c = claimParams(project);
+  const expected = [c.centerLat, c.centerLon, c.cosK, c.radius].map(String);
+  if (expected.some((v, i) => v !== String(data.pub[i + 1]))) return fail(states, notes, 3, 'The proof uses a different site or radius than the public claim.');
+  states[3] = true; renderSteps(states, notes);
+
+  // 5. The zero-knowledge proof itself
+  let ok = false;
+  try { ok = await snarkjs.groth16.verify(VKEY, data.pub, data.proof); } catch (e) {}
+  if (!ok) return fail(states, notes, 4, 'The zero-knowledge proof is not valid.');
+  states[4] = true; renderSteps(states, notes);
+
+  document.getElementById('result').innerHTML = `
+    <div class="result ok"><span class="big">&#10003;</span><div><b>Photo taken within ${CLAIM_RADIUS_M / 1000} km of the project site</b>
+      <span class="muted">${esc(project.name)}, ${esc(project.country)}${refBlock ? ', ' + fmt(refBlock.timestamp) : ''}</span></div></div>
+    <div class="card">
+      <div class="row"><span>What you know</span><span>The photo for this project was taken within ${CLAIM_RADIUS_M / 1000} km of the site, and its data has not changed since it was stored on the blockchain.</span></div>
+      <div class="row"><span>What stays private</span><span>The exact location, the photo, the people in it and the staff member who took it.</span></div>
+      <div class="row"><span>Blockchain</span><span><a href="${CHAIN.explorer}/tx/${data.ref}" target="_blank" rel="noopener">Photo record</a> &nbsp; <a href="${CHAIN.explorer}/tx/${txId}" target="_blank" rel="noopener">Proof record</a></span></div>
+    </div>`;
+}
+
+function checkFromInput() {
+  const v = document.getElementById('txIn').value.trim();
+  const m = v.match(/0x[0-9a-fA-F]{64}/);
+  checkProof(m ? m[0] : v);
+}
+const fromUrl = new URLSearchParams(location.search).get('tx');
+if (fromUrl) { document.getElementById('txIn').value = fromUrl; checkProof(fromUrl); }
+</script>
+</body>
+</html>
